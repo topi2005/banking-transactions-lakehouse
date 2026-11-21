@@ -1,2 +1,16 @@
+# generated data (reproducible from the seed)
 data/
-*/csv
+*.csv
+
+# python / spark
+__pycache__/
+*.pyc
+.pytest_cache/
+spark-warehouse/
+metastore_db/
+derby.log
+
+# local
+.env
+.DS_Store
+.vscode/

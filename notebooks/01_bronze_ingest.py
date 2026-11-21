@@ -1,8 +1,4 @@
 # Databricks notebook source
-# /// script
-# [tool.databricks.environment]
-# environment_version = "6"
-# ///
 # MAGIC %md
 # MAGIC # 01 · Bronze ingestion
 # MAGIC **Goal:** land raw CSVs in a Unity Catalog Volume and load them *unchanged* into Delta tables,
@@ -56,8 +52,8 @@ print("Ready:", BASE)
 
 # MAGIC %md
 # MAGIC ## 2 · Put the data in the volume
-# MAGIC **Option A: generate it here (easiest).** Import `generate_data.py` into the same workspace folder as
-# MAGIC this notebook, then run the cell below.
+# MAGIC **Option A: generate it here (easiest).** Keep `generate_data.py` in the repo's `src/` folder (a sibling
+# MAGIC of `notebooks/`), then run the cell below.
 # MAGIC
 # MAGIC **Option B: generate locally and upload.** Run `python generate_data.py --out ./data`, then in
 # MAGIC *Catalog → workspace → banking_lakehouse → landing* create the `raw/<table>/` folders and upload
@@ -66,6 +62,8 @@ print("Ready:", BASE)
 # COMMAND ----------
 
 # Option A. Skip this cell if you uploaded the files yourself.
+import sys
+sys.path.append("../src")   # repo layout: notebooks/ and src/ are siblings
 import generate_data
 
 generate_data.main(["--rows", "500000", "--customers", "20000", "--merchants", "1500", "--out", RAW])
