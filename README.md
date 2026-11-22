@@ -24,8 +24,8 @@ flowchart LR
 | Layer | Purpose | Status |
 |---|---|---|
 | **Bronze** | Raw data, unchanged, as strings. Adds `_ingested_at`, `_source_file`, `_batch_id` | Done |
-| **Silver** | Typed, deduplicated, validated. Rejected rows go to a quarantine table with reasons | In progress |
-| **Quality layer** | Rule-based checks written to a results table, plus reconciliation | Planned |
+| **Silver** | Typed, deduplicated, validated. Rejected rows go to a quarantine table with reasons | Done |
+| **Quality layer** | Config-driven rules, results history table, pipeline gate, reconciliation | Code written; results pending |
 | **Gold** | Star schema (`fact_transactions` + dimensions) and aggregate tables | Planned |
 
 ## Tech stack
@@ -36,10 +36,13 @@ Databricks (Unity Catalog, Volumes, Workflows) · PySpark · Delta Lake · Pytho
 ├── README.md
 ├── src/
 │   ├── generate_data.py        # synthetic data + deliberately injected dirty data
-│   └── silver_transforms.py    # pure PySpark functions (unit-testable)
+│   ├── silver_transforms.py    # pure PySpark functions (unit-testable)
+│   ├── dq_framework.py         # rule engine: rules in, results DataFrame out
+│   └── dq_rules.py             # the rules themselves, as data
 ├── notebooks/
 │   ├── 01_bronze_ingest.py     # Databricks notebook (source format)
-│   └── 02_silver_transform.py
+│   ├── 02_silver_transform.py
+│   └── 03_data_quality.py
 ├── tests/                      # pytest suite (planned)
 └── docs/screenshots/
 ```
@@ -107,35 +110,75 @@ Deduplicating first stops one bad row that was duplicated from being counted as 
 bronze rows = silver rows + quarantined rows + duplicates removed
 ```
 
-## Results
+## Day 2 results (silver)
+
+Measured on the full 510,000-row run:
 
 | Metric | Bronze (before) | Silver (after) |
 |---|---|---|
-| NULL cells in key columns (`merchant_id`, `amount`, `channel`, `transaction_ts`) | _fill from run_ | _fill from run_ |
+| NULL cells in key columns (`merchant_id`, `amount`, `channel`, `transaction_ts`) | 40,125 | 0 |
 | Duplicate `transaction_id` rows | 10,000 | 0 |
-| Rows quarantined | n/a | _fill from run_ |
-| Reconciliation (bronze = silver + quarantine + duplicates) | n/a | _fill from run_ |
+| Rows | 510,000 | 482,283 |
+| Rows quarantined | n/a | 17,717 (3.47%) |
 
-*The Day 2 notebook prints these numbers and stores them in `silver_run_summary`.*
+**Reconciliation holds:** 510,000 = 482,283 silver + 17,717 quarantined + 10,000 duplicates removed.
 
-**How to read the null reduction fairly:** nulls in `amount` and `transaction_ts` disappear because those rows
+**Quarantine reasons:**
+
+| Reason | Count |
+|---|---|
+| `MISSING_AMOUNT` | 13,333 |
+| `INVALID_TIMESTAMP` | 2,500 |
+| `ORPHAN_ACCOUNT_ID` | 2,000 |
+
+The reason counts add up to more than 17,717 because a row can fail more than one rule.
+
+**Values repaired rather than rejected:** 15,726 day-first dates parsed, 9,709 text amounts (`R153,62`) converted,
+25,000 channel values normalised.
+**Imputed and flagged (`'UNKNOWN'`):** 12,921 `merchant_id` and 12,165 `channel` values. **Amount outliers flagged and kept:** 390.
+
+**How to read the 100% null reduction fairly:** nulls in `amount` and `transaction_ts` disappear because those rows
 are *rejected*. Nulls in `merchant_id` and `channel` disappear through *explicit imputation* (`'UNKNOWN'` plus a
-flag column). Both numbers are reported next to the headline, so the improvement isn't overstated.
+flag column). Both are reported next to the headline so the improvement isn't overstated.
+
+## Day 3: Data-quality framework
+
+Quality is measured by **rules defined as data** (`src/dq_rules.py`) and evaluated by one engine
+(`src/dq_framework.py`) that runs unchanged on every layer.
+
+| Rule kind | Checks |
+|---|---|
+| `not_null` | Column has no NULLs |
+| `unique` | Non-null values don't repeat |
+| `accepted_values` | Values come from an allowed set |
+| `range` | Values fall within min and max |
+| `regex` | Values match a pattern |
+| `foreign_key` | Values exist in a parent table (with documented sentinels such as `'UNKNOWN'`) |
+| `sql_expression` | Any custom rule, e.g. refund sign must match `is_refund` |
+
+**Design choices**
+- **Bronze runs the same rules and is expected to fail.** That makes the "before" a measurement, not an anecdote.
+- **Results are append-only** in `dq_results`, with `dq_latest` as a view of the newest run, so quality can be tracked over time.
+- **Severity:** `error` rules block the pipeline through `assert_no_failures()`; `warn` rules only report. Outliers are flagged and kept on purpose, so that rule is a warning.
+- **Only `not_null` cares about NULLs.** Every other rule ignores them, so one problem is reported once.
+- **Reconciliation is itself a rule**, so a lost row shows up in the same table as every other failure.
+
+**Results:** _fill from the Day 3 run (rules passing per layer, reliability %)._
 
 ## How to run
 
 1. Create a Databricks workspace (the free tier works; check its current limits).
 2. Clone this repo into a Databricks Git folder (or import `src/` and `notebooks/` keeping the same structure).
 3. Run `notebooks/01_bronze_ingest.py` top to bottom. It creates the schema and volume, generates the data and loads bronze.
-4. Run `notebooks/02_silver_transform.py`.
+4. Run `notebooks/02_silver_transform.py`, then `notebooks/03_data_quality.py`.
 
 To generate data locally instead: `python src/generate_data.py --rows 500000 --out ./data --seed 42`.
 
 ## Roadmap
 
 - [x] **Day 1:** workspace, synthetic data generator, bronze ingestion, reconciliation, baseline profile
-- [ ] **Day 2:** silver cleaning, quarantine table, run summary *(code written; record results after the run)*
-- [ ] **Day 3:** data-quality framework (`dq_results` table: not-null, uniqueness, referential integrity, range checks)
+- [x] **Day 2:** silver cleaning, quarantine table, run summary
+- [ ] **Day 3:** data-quality framework (`dq_results` table, pipeline gate) *(code written; record results after the run)*
 - [ ] **Day 4:** gold star schema (`fact_transactions`, `dim_customer`, `dim_account`, `dim_merchant`, `dim_date`) + aggregates
 - [ ] **Day 5:** Databricks Workflow, incremental loads with Delta `MERGE`, lineage view
 - [ ] **Day 6:** pytest suite, GitHub Actions CI, PySpark vs pandas timing comparison
