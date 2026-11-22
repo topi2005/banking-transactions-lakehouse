@@ -70,3 +70,35 @@ SILVER_RULES = [
     Rule("merchant_id_unique", "merchants", "unique", "merchant_id"),
     Rule("merchant_category_not_null", "merchants", "not_null", "category"),
 ]
+
+# --------------------------------------------------------------------------- gold (star schema)
+# Logical table names: fact, dim_customer, dim_account, dim_merchant, dim_channel, dim_date
+GOLD_RULES = [
+    # fact: keys present and unique grain
+    Rule("transaction_id_not_null", "fact", "not_null", "transaction_id"),
+    Rule("transaction_id_unique", "fact", "unique", "transaction_id"),
+    *[Rule(f"{k}_not_null", "fact", "not_null", k)
+      for k in ["date_key", "account_key", "customer_key", "merchant_key", "channel_key", "amount"]],
+    # fact -> dimension referential integrity (keys are hashes, so this is VERIFIED, not assumed)
+    Rule("date_key_exists", "fact", "foreign_key", "date_key",
+         {"ref_table": "dim_date", "ref_column": "date_key"}),
+    Rule("account_key_exists", "fact", "foreign_key", "account_key",
+         {"ref_table": "dim_account", "ref_column": "account_key"}),
+    Rule("customer_key_exists", "fact", "foreign_key", "customer_key",
+         {"ref_table": "dim_customer", "ref_column": "customer_key"}),
+    Rule("merchant_key_exists", "fact", "foreign_key", "merchant_key",
+         {"ref_table": "dim_merchant", "ref_column": "merchant_key"}),
+    Rule("channel_key_exists", "fact", "foreign_key", "channel_key",
+         {"ref_table": "dim_channel", "ref_column": "channel_key"}),
+    Rule("refund_sign_consistent", "fact", "sql_expression", None,
+         {"fail_sql": "(amount < 0) <> is_refund"}),
+    # dimensions: surrogate keys must be unique (guards against hash collisions)
+    Rule("customer_key_unique", "dim_customer", "unique", "customer_key"),
+    Rule("customer_key_not_null", "dim_customer", "not_null", "customer_key"),
+    Rule("customer_age_band_valid", "dim_customer", "accepted_values", "age_band",
+         {"values": ["18-24", "25-34", "35-44", "45-54", "55+", "Unknown"]}),
+    Rule("account_key_unique", "dim_account", "unique", "account_key"),
+    Rule("merchant_key_unique", "dim_merchant", "unique", "merchant_key"),
+    Rule("channel_key_unique", "dim_channel", "unique", "channel_key"),
+    Rule("date_key_unique", "dim_date", "unique", "date_key"),
+]

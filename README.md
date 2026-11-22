@@ -25,8 +25,8 @@ flowchart LR
 |---|---|---|
 | **Bronze** | Raw data, unchanged, as strings. Adds `_ingested_at`, `_source_file`, `_batch_id` | Done |
 | **Silver** | Typed, deduplicated, validated. Rejected rows go to a quarantine table with reasons | Done |
-| **Quality layer** | Config-driven rules, results history table, pipeline gate, reconciliation | Code written; results pending |
-| **Gold** | Star schema (`fact_transactions` + dimensions) and aggregate tables | Planned |
+| **Quality layer** | Config-driven rules, results history table, pipeline gate, reconciliation | Done |
+| **Gold** | Star schema (`fact_transactions` + 5 dimensions) and 2 aggregate tables | Code written; results pending |
 
 ## Tech stack
 Databricks (Unity Catalog, Volumes, Workflows) · PySpark · Delta Lake · Python · SQL · GitHub Actions · pytest
@@ -37,12 +37,14 @@ Databricks (Unity Catalog, Volumes, Workflows) · PySpark · Delta Lake · Pytho
 ├── src/
 │   ├── generate_data.py        # synthetic data + deliberately injected dirty data
 │   ├── silver_transforms.py    # pure PySpark functions (unit-testable)
+│   ├── gold_transforms.py      # star schema + aggregates (pure functions)
 │   ├── dq_framework.py         # rule engine: rules in, results DataFrame out
-│   └── dq_rules.py             # the rules themselves, as data
+│   └── dq_rules.py             # the rules themselves, as data (bronze, silver, gold)
 ├── notebooks/
 │   ├── 01_bronze_ingest.py     # Databricks notebook (source format)
 │   ├── 02_silver_transform.py
-│   └── 03_data_quality.py
+│   ├── 03_data_quality.py
+│   └── 04_gold_model.py
 ├── tests/                      # pytest suite (planned)
 └── docs/screenshots/
 ```
@@ -163,14 +165,67 @@ Quality is measured by **rules defined as data** (`src/dq_rules.py`) and evaluat
 - **Only `not_null` cares about NULLs.** Every other rule ignores them, so one problem is reported once.
 - **Reconciliation is itself a rule**, so a lost row shows up in the same table as every other failure.
 
-**Results:** _fill from the Day 3 run (rules passing per layer, reliability %)._
+**Results** (full 510,000-row run):
+
+| Layer | Rules | Pass | Fail | Reliability* |
+|---|---|---|---|---|
+| Bronze | 11 | 3 | 8 | 98.122% |
+| Silver | 26 | 26 | 0 | 99.995% |
+
+\*Share of individual row-checks that passed across all rules in the layer.
+
+Worst bronze rules: invalid channel value 94.997%, ISO-parseable timestamp 96.513%, `merchant_id` not null 97.332%,
+`amount` not null 97.333%, `channel` not null 97.468%, duplicate `transaction_id` 98.039%, numeric `amount` 98.058%,
+orphan `account_id` 99.600%.
+
+Silver's one near-miss is `amount_within_plausible_range`: 390 flagged outliers out of 482,283 rows (99.919%),
+inside its 99.9% threshold, so it reports PASS rather than WARN.
+
+**How to read these numbers fairly:** silver passes largely *by construction*, because the silver step already
+rejects or repairs what these rules look for. The framework's value is independent verification and regression
+protection: if a future change to the cleaning logic breaks an assumption, the gate fails instead of bad data flowing
+into gold. The reliability figure is only as meaningful as the rules behind it, so it is always quoted with the rule count.
+
+## Day 4: Gold layer (star schema)
+
+```mermaid
+erDiagram
+    fact_transactions }o--|| dim_date : date_key
+    fact_transactions }o--|| dim_customer : customer_key
+    fact_transactions }o--|| dim_account : account_key
+    fact_transactions }o--|| dim_merchant : merchant_key
+    fact_transactions }o--|| dim_channel : channel_key
+```
+
+**Grain:** one row per transaction. `transaction_id` is kept on the fact as a degenerate dimension.
+
+| Table | Contents |
+|---|---|
+| `fact_transactions` | keys, `amount`, `is_refund`, outlier and imputation flags, lineage batch ID |
+| `dim_date` | calendar attributes: year, quarter, month, ISO weekday, week, weekend, month-end |
+| `dim_customer` | province, segment, age band, onboarding date (**PII-minimised**: no names, e-mail or date of birth) |
+| `dim_account` | account type, status, opened date |
+| `dim_merchant` | merchant name, category, province, plus an `Unknown` member |
+| `dim_channel` | channel code grouped as Physical / Digital / Interbank, plus an `Unknown` member |
+| `agg_daily_segment` | day × customer segment: counts, purchases, refunds, net, average purchase, active customers |
+| `agg_monthly_category` | month × merchant category × merchant province |
+
+**Design choices**
+- **Deterministic surrogate keys** (hash of the natural key). Reruns and incremental `MERGE` loads never reshuffle keys, and the fact computes its keys without joining every dimension. The trade-off is that integrity must be *verified*, which the gold quality rules do for every foreign key.
+- **Unknown members (key `-1`).** Rows with an imputed merchant or channel keep a valid foreign key instead of a NULL or a dropped row.
+- **PII minimisation.** The customer dimension keeps only what a spending mart needs.
+- **Aggregates exclude suspected outliers and count them separately**, so `txn_count + outlier_txn_count` always equals the fact row count.
+- **Control totals.** The gold checks assert that fact row count and fact amount (in cents) equal silver exactly.
+
+**Results:** _fill from the Day 4 run (table row counts, gold checks passed, control totals)._
+
 
 ## How to run
 
 1. Create a Databricks workspace (the free tier works; check its current limits).
 2. Clone this repo into a Databricks Git folder (or import `src/` and `notebooks/` keeping the same structure).
 3. Run `notebooks/01_bronze_ingest.py` top to bottom. It creates the schema and volume, generates the data and loads bronze.
-4. Run `notebooks/02_silver_transform.py`, then `notebooks/03_data_quality.py`.
+4. Run `notebooks/02_silver_transform.py`, `notebooks/03_data_quality.py`, then `notebooks/04_gold_model.py`.
 
 To generate data locally instead: `python src/generate_data.py --rows 500000 --out ./data --seed 42`.
 
@@ -178,8 +233,8 @@ To generate data locally instead: `python src/generate_data.py --rows 500000 --o
 
 - [x] **Day 1:** workspace, synthetic data generator, bronze ingestion, reconciliation, baseline profile
 - [x] **Day 2:** silver cleaning, quarantine table, run summary
-- [ ] **Day 3:** data-quality framework (`dq_results` table, pipeline gate) *(code written; record results after the run)*
-- [ ] **Day 4:** gold star schema (`fact_transactions`, `dim_customer`, `dim_account`, `dim_merchant`, `dim_date`) + aggregates
+- [x] **Day 3:** data-quality framework (`dq_results` table, pipeline gate)
+- [ ] **Day 4:** gold star schema (`fact_transactions` + 5 dimensions) + aggregates *(code written; record results after the run)*
 - [ ] **Day 5:** Databricks Workflow, incremental loads with Delta `MERGE`, lineage view
 - [ ] **Day 6:** pytest suite, GitHub Actions CI, PySpark vs pandas timing comparison
 
@@ -190,4 +245,6 @@ To generate data locally instead: `python src/generate_data.py --rows 500000 --o
 - **The outlier threshold (R50,000) is a fixed business rule.** A production system would tune it per segment or product.
 - **Imputing `'UNKNOWN'` trades completeness for usability.** It is always flagged so downstream users can exclude those rows.
 - **Day 1 and 2 use full overwrite loads.** Incremental processing with `MERGE` arrives on Day 5.
-- **Single-node, small-scale.** There is no cluster tuning or partitioning strategy yet.
+- **Single-node, small-scale.** At about 500k rows no partitioning or clustering is needed. At bank volume the fact would be partitioned or clustered by date.
+- **Hash surrogate keys** trade simplicity for a theoretical collision risk. Key-uniqueness rules guard against it.
+- **No slowly changing dimensions.** Customer and account attributes are treated as current-state (Type 1).
