@@ -175,13 +175,14 @@ comments = {
     "dim_date": "One row per calendar day in the data window.",
     "dim_customer": "PII-minimised customer attributes: province, segment, age band. No names, e-mail or date of birth.",
     "dim_account": "Account attributes: type, status, opened date.",
-    "dim_merchant": "Merchant attributes. Row with key -1 is the 'Unknown' member for imputed merchants.",
+    "dim_merchant": "Merchant attributes. Row with key -1 is the Unknown member for imputed merchants.",
     "dim_channel": "Channel codes grouped as Physical / Digital / Interbank. Key -1 = Unknown.",
     "agg_daily_segment": "Daily spend by customer segment. Suspected outliers excluded and counted in outlier_txn_count.",
     "agg_monthly_category": "Monthly spend by merchant category and merchant province. Suspected outliers excluded.",
 }
 for table, text in comments.items():
-    spark.sql(f"COMMENT ON TABLE {T(table)} IS '{text}'")
+    safe = text.replace("\\", "\\\\").replace("'", "\\'")   # escape backslashes and single quotes for the SQL literal
+    spark.sql(f"COMMENT ON TABLE {T(table)} IS '{safe}'")
 print("Table comments set")
 
 # COMMAND ----------
