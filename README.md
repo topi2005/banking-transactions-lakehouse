@@ -26,7 +26,7 @@ flowchart LR
 | **Bronze** | Raw data, unchanged, as strings. Adds `_ingested_at`, `_source_file`, `_batch_id` | Done |
 | **Silver** | Typed, deduplicated, validated. Rejected rows go to a quarantine table with reasons | Done |
 | **Quality layer** | Config-driven rules, results history table, pipeline gate, reconciliation | Done |
-| **Gold** | Star schema (`fact_transactions` + 5 dimensions) and 2 aggregate tables | Code written; results pending |
+| **Gold** | Star schema (`fact_transactions` + 5 dimensions) and 2 aggregate tables | Done |
 
 ## Tech stack
 Databricks (Unity Catalog, Volumes, Workflows) · PySpark · Delta Lake · Python · SQL · GitHub Actions · pytest
@@ -217,7 +217,39 @@ erDiagram
 - **Aggregates exclude suspected outliers and count them separately**, so `txn_count + outlier_txn_count` always equals the fact row count.
 - **Control totals.** The gold checks assert that fact row count and fact amount (in cents) equal silver exactly.
 
-**Results:** _fill from the Day 4 run (table row counts, gold checks passed, control totals)._
+**Results** (full run):
+
+| Table | Rows |
+|---|---|
+| `fact_transactions` | 482,283 (equals silver) |
+| `dim_customer` | 20,000 |
+| `dim_account` | 30,900 |
+| `dim_merchant` | 1,501 (1,500 merchants + the Unknown member) |
+| `dim_channel` | 6 (5 channels + the Unknown member) |
+| `dim_date` | 181 (1 Jan to 30 Jun 2026) |
+| `agg_daily_segment` | 724 (181 days × 4 segments) |
+| `agg_monthly_category` | 492 (6 months × 9 categories × 9 provinces, plus the Unknown merchant member) |
+
+**24 gold checks passed** (21 rules plus 3 reconciliations), and the gate would have stopped the run otherwise:
+- every fact foreign key resolves to a dimension row,
+- every surrogate key is unique,
+- fact row count equals silver row count,
+- **fact amount equals silver amount exactly, to the cent** (R247,654,475.75),
+- the number of fact rows pointing at the Unknown merchant equals the number of merchants imputed in silver (12,921).
+
+Both aggregates account for every fact row: `txn_count + outlier_txn_count` equals the fact row count.
+
+![Gold quality checks](docs/screenshots/04-gold/gold-checks.png)
+![Aggregates reconcile to the fact table](docs/screenshots/04-gold/aggregates-pass.png)
+
+**The star schema in use:** net spend by customer segment and merchant category, joining the fact table to
+`dim_customer` and `dim_merchant` on surrogate keys (suspected outliers excluded).
+
+![Net spend by segment and category](docs/screenshots/04-gold/segment-category-query.png)
+
+*The data is synthetic and uniformly random, so differences between categories are noise, not insight. Segment
+totals simply track how many customers each segment has. The query demonstrates the model, not a business finding.*
+
 
 
 ## How to run
@@ -234,7 +266,7 @@ To generate data locally instead: `python src/generate_data.py --rows 500000 --o
 - [x] **Day 1:** workspace, synthetic data generator, bronze ingestion, reconciliation, baseline profile
 - [x] **Day 2:** silver cleaning, quarantine table, run summary
 - [x] **Day 3:** data-quality framework (`dq_results` table, pipeline gate)
-- [ ] **Day 4:** gold star schema (`fact_transactions` + 5 dimensions) + aggregates *(code written; record results after the run)*
+- [x] **Day 4:** gold star schema (`fact_transactions` + 5 dimensions) + aggregates
 - [ ] **Day 5:** Databricks Workflow, incremental loads with Delta `MERGE`, lineage view
 - [ ] **Day 6:** pytest suite, GitHub Actions CI, PySpark vs pandas timing comparison
 
