@@ -46,7 +46,7 @@ Databricks (Unity Catalog, Volumes, Workflows) · PySpark · Delta Lake · Pytho
 │   ├── 03_data_quality.py
 │   └── 04_gold_model.py
 ├── tests/                      # pytest suite (planned)
-└── docs/screenshots/
+└── docs/
 ```
 
 ## The data
@@ -239,13 +239,13 @@ erDiagram
 
 Both aggregates account for every fact row: `txn_count + outlier_txn_count` equals the fact row count.
 
-![Gold quality checks](docs/screenshots/04-gold/gold-checks.png)
-![Aggregates reconcile to the fact table](docs/screenshots/04-gold/aggregates-pass.png)
+![Gold quality checks](docs/04-gold/gold-checks.png)
+![Aggregates reconcile to the fact table](docs/04-gold/aggregates-pass.png)
 
 **The star schema in use:** net spend by customer segment and merchant category, joining the fact table to
 `dim_customer` and `dim_merchant` on surrogate keys (suspected outliers excluded).
 
-![Net spend by segment and category](docs/screenshots/04-gold/segment-category-query.png)
+![Net spend by segment and category](docs/04-gold/segment-category-query.png)
 
 *The data is synthetic and uniformly random, so differences between categories are noise, not insight. Segment
 totals simply track how many customers each segment has. The query demonstrates the model, not a business finding.*
