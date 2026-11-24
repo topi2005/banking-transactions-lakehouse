@@ -43,7 +43,7 @@ SILVER_RULES = [
          {"values": VALID_CHANNELS + ["UNKNOWN"]}),
     Rule("currency_is_zar", "transactions", "accepted_values", "currency", {"values": ["ZAR"]}),
     Rule("transaction_date_in_window", "transactions", "range", "transaction_date",
-         {"min": "2026-01-01", "max": "2026-06-30"}),
+         {"min": "2026-01-01", "max": "2026-12-31"}),   # plausible window for this dataset (the year)
     Rule("refund_sign_consistent", "transactions", "sql_expression", None,
          {"fail_sql": "(amount < 0) <> is_refund"}),
     # outliers are flagged and kept on purpose, so they warn rather than block

@@ -38,15 +38,22 @@ Databricks (Unity Catalog, Volumes, Workflows) · PySpark · Delta Lake · Pytho
 │   ├── generate_data.py        # synthetic data + deliberately injected dirty data
 │   ├── silver_transforms.py    # pure PySpark functions (unit-testable)
 │   ├── gold_transforms.py      # star schema + aggregates (pure functions)
+│   ├── pipeline_ops.py         # batch log, pending-batch discovery, run tracking
 │   ├── dq_framework.py         # rule engine: rules in, results DataFrame out
 │   └── dq_rules.py             # the rules themselves, as data (bronze, silver, gold)
 ├── notebooks/
 │   ├── 01_bronze_ingest.py     # Databricks notebook (source format)
 │   ├── 02_silver_transform.py
 │   ├── 03_data_quality.py
-│   └── 04_gold_model.py
+│   ├── 04_gold_model.py
+│   ├── 10_incremental_setup.py # one-time: batch log + baseline
+│   ├── 11_bronze_incremental.py  ┐
+│   ├── 12_silver_merge.py        │ the four tasks of the workflow
+│   ├── 13_silver_quality_gate.py │
+│   ├── 14_gold_publish.py        ┘
+│   └── 15_demo_new_drop.py     # demo helper: simulates a new daily file
 ├── tests/                      # pytest suite (planned)
-└── docs/
+└── docs/screenshots/
 ```
 
 ## The data
@@ -239,25 +246,61 @@ erDiagram
 
 Both aggregates account for every fact row: `txn_count + outlier_txn_count` equals the fact row count.
 
-![Gold quality checks](docs/04-gold/gold-checks.png)
-![Aggregates reconcile to the fact table](docs/04-gold/aggregates-pass.png)
+![Gold quality checks](docs/screenshots/04-gold/gold-checks.png)
+![Aggregates reconcile to the fact table](docs/screenshots/04-gold/aggregates-pass.png)
 
 **The star schema in use:** net spend by customer segment and merchant category, joining the fact table to
 `dim_customer` and `dim_merchant` on surrogate keys (suspected outliers excluded).
 
-![Net spend by segment and category](docs/04-gold/segment-category-query.png)
+![Net spend by segment and category](docs/screenshots/04-gold/segment-category-query.png)
 
 *The data is synthetic and uniformly random, so differences between categories are noise, not insight. Segment
 totals simply track how many customers each segment has. The query demonstrates the model, not a business finding.*
 
 
 
+## Day 5: Incremental pipeline and workflow (transactions only)
+
+Days 1 to 4 rebuilt everything from scratch. Day 5 turns the transaction flow into an **incremental, restartable,
+automated pipeline**: only new files are processed, a failed run can simply be rerun, and a bad load is stopped
+before it reaches the star schema.
+
+```mermaid
+flowchart LR
+    F[New CSV in landing volume] --> T1[1. bronze_incremental<br/>append new files as a batch]
+    T1 --> T2[2. silver_merge<br/>clean batch, MERGE valid rows,<br/>quarantine the rest]
+    T2 --> T3[3. silver_quality_gate<br/>fails the job if a rule fails]
+    T3 --> T4[4. gold_publish<br/>MERGE facts, extend dim_date,<br/>verify, rebuild aggregates]
+    T1 & T2 & T4 -.-> L[(pipeline_batch_log)]
+```
+
+**How it works**
+- **Batches.** Each run's new files become one batch with a sortable ID. A small Delta table, `pipeline_batch_log`, records the outcome (`SUCCESS` or `FAILED`, row counts, message) of every batch at every layer.
+- **Pending work comes from the log.** Silver processes the batches bronze finished and silver hasn't; gold does the same for silver. A task that fails leaves no `SUCCESS` row, so the next run picks the batch up again: it is **restartable** without any external state.
+- **Insert-only `MERGE` on `transaction_id`.** A ledger transaction is immutable, so a re-delivered row is a duplicate to ignore, not an update. Reprocessing a batch can never create duplicates, which makes every step **idempotent**.
+- **Every batch reconciles:** `bronze rows = duplicates in batch + quarantined + re-delivered + newly inserted`. The task fails if the equation doesn't hold.
+- **Self-healing.** A row quarantined earlier (say, a missing amount) and re-sent with a fix passes validation and is inserted.
+- **Gold handles new dates.** A fact row for 1 July needs a `dim_date` row for 1 July, so gold rebuilds `dim_date` from the silver date range before verifying foreign keys.
+- **A failed gate blocks gold.** The quality-gate task fails the job, and the dependent gold task never runs.
+
+**Workflow** (Jobs & Pipelines): four notebook tasks in a chain, each depending on the one before. Schedule: daily.
+Failure email notification, max concurrent runs = 1. A day with no new file is a *success* ("NO_NEW_FILES"), not a failure.
+
+**Demo** (what the screenshots show):
+1. Run `10_incremental_setup.py` once to baseline the data loaded on Days 1 to 4.
+2. Run the job with no new file: every task succeeds and reports nothing to do.
+3. Run `15_demo_new_drop.py` to add a file (new rows, re-delivered rows, resubmitted fixes), then run the job again.
+4. Run the job a third time: nothing new, nothing changes.
+
+**Results:** _fill from the Day 5 run (batch log, per-batch reconciliation, row counts before and after)._
+
 ## How to run
 
 1. Create a Databricks workspace (the free tier works; check its current limits).
 2. Clone this repo into a Databricks Git folder (or import `src/` and `notebooks/` keeping the same structure).
 3. Run `notebooks/01_bronze_ingest.py` top to bottom. It creates the schema and volume, generates the data and loads bronze.
-4. Run `notebooks/02_silver_transform.py`, `notebooks/03_data_quality.py`, then `notebooks/04_gold_model.py`.
+4. Run `notebooks/02_silver_transform.py`, `notebooks/03_data_quality.py`, then `notebooks/04_gold_model.py` (the full-load build).
+5. For the incremental pipeline, run `notebooks/10_incremental_setup.py` once, then create the four-task job described in Day 5.
 
 To generate data locally instead: `python src/generate_data.py --rows 500000 --out ./data --seed 42`.
 
@@ -267,7 +310,7 @@ To generate data locally instead: `python src/generate_data.py --rows 500000 --o
 - [x] **Day 2:** silver cleaning, quarantine table, run summary
 - [x] **Day 3:** data-quality framework (`dq_results` table, pipeline gate)
 - [x] **Day 4:** gold star schema (`fact_transactions` + 5 dimensions) + aggregates
-- [ ] **Day 5:** Databricks Workflow, incremental loads with Delta `MERGE`, lineage view
+- [ ] **Day 5:** Databricks Workflow, incremental loads with Delta `MERGE` for transactions *(code written; record results after the run)*
 - [ ] **Day 6:** pytest suite, GitHub Actions CI, PySpark vs pandas timing comparison
 
 ## Limitations and assumptions
@@ -276,7 +319,11 @@ To generate data locally instead: `python src/generate_data.py --rows 500000 --o
 - **Dates are assumed day-first.** An ambiguous `03/04/2026` is read as 3 April.
 - **The outlier threshold (R50,000) is a fixed business rule.** A production system would tune it per segment or product.
 - **Imputing `'UNKNOWN'` trades completeness for usability.** It is always flagged so downstream users can exclude those rows.
-- **Day 1 and 2 use full overwrite loads.** Incremental processing with `MERGE` arrives on Day 5.
+- **Days 1 to 4 use full overwrite loads.** Day 5 adds incremental processing for the transaction flow only; customers, accounts and merchants are static and are not loaded incrementally.
+- **File tracking is hand-rolled** (new file names compared with `_source_file`). Auto Loader or `COPY INTO` is the production-grade alternative.
+- **Insert-only `MERGE` ignores corrections to an existing `transaction_id`.** In a real ledger, corrections arrive as new reversal rows.
+- **The aggregates are rebuilt in full on every gold run.** That is fine at this size; at scale they would be updated incrementally.
+- **The workflow is defined in the Databricks UI.** Exporting it as code (for example a Databricks Asset Bundle) is a natural next step.
 - **Single-node, small-scale.** At about 500k rows no partitioning or clustering is needed. At bank volume the fact would be partitioned or clustered by date.
 - **Hash surrogate keys** trade simplicity for a theoretical collision risk. Key-uniqueness rules guard against it.
 - **No slowly changing dimensions.** Customer and account attributes are treated as current-state (Type 1).

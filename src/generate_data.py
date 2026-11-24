@@ -13,6 +13,8 @@ injections can overlap on the same row, so verify with your own checks too.
 
 Usage (terminal):
     python generate_data.py --rows 500000 --out ./data --seed 42
+Incremental drop (adds one new transactions file to an existing <out>, for the Day 5 pipeline):
+    python generate_data.py --incremental --out ./data --batch-name batch2
 Usage (Databricks notebook, file imported next to the notebook):
     import generate_data
     generate_data.main(["--out", "/Volumes/workspace/banking_lakehouse/landing/raw"])
@@ -88,15 +90,15 @@ def make_merchants(rng, n):
     })
 
 
-def make_transactions(rng, accounts, merchants, n):
+def make_transactions(rng, accounts, merchants, n, start_id=1, start_ts="2026-01-01", days=181):
     acc_idx = rng.integers(0, len(accounts), n)
     mer_idx = rng.integers(0, len(merchants), n)
     amount = np.round(rng.lognormal(mean=5.0, sigma=1.1, size=n), 2)  # median ~R150
-    ts = (pd.Timestamp("2026-01-01")
-          + pd.to_timedelta(rng.integers(0, 181 * 86400, n), unit="s"))  # Jan-Jun 2026
+    ts = (pd.Timestamp(start_ts)
+          + pd.to_timedelta(rng.integers(0, days * 86400, n), unit="s"))  # default: Jan-Jun 2026
     is_refund = rng.random(n) < 0.02
     tx = pd.DataFrame({
-        "transaction_id": [f"T{i:010d}" for i in range(1, n + 1)],
+        "transaction_id": [f"T{i:010d}" for i in range(start_id, start_id + n)],
         "account_id": accounts.account_id.to_numpy()[acc_idx],
         "merchant_id": merchants.merchant_id.to_numpy()[mer_idx],
         "transaction_ts": ts,
@@ -175,6 +177,59 @@ def dirty_transactions(rng, tx, accounts, rate_null=0.08, rate_dup=0.02):
     return tx, m
 
 
+def make_incremental_batch(a):
+    """
+    Create ONE new transaction file in <out>/transactions/ to simulate a later daily drop.
+
+    The batch deliberately contains four kinds of rows so the incremental pipeline has something to prove:
+      * NEW transactions (fresh ids, later dates, with the usual dirty data injected)
+      * RE-DELIVERED rows (same transaction_id as an earlier batch): MERGE must ignore them
+      * RESUBMITTED FIXES: earlier rows that were quarantined for a missing amount, re-sent with an amount;
+        they should now pass validation and be inserted ("self-healing")
+    """
+    out = Path(a.out)
+    rng = np.random.default_rng(a.seed + 1000)   # different stream from the initial load
+    tx_dir = out / "transactions"
+    existing = pd.concat([pd.read_csv(f, dtype=str) for f in sorted(tx_dir.glob("*.csv"))],
+                         ignore_index=True)
+    accounts = pd.read_csv(out / "accounts" / "accounts.csv", dtype=str)
+    merchants = pd.read_csv(out / "merchants" / "merchants.csv", dtype=str)
+
+    start_id = int(existing["transaction_id"].str[1:].astype(int).max()) + 1
+    new_clean = make_transactions(rng, accounts, merchants, a.new_rows,
+                                  start_id=start_id, start_ts=a.start_date, days=a.days)
+    new_dirty, manifest = dirty_transactions(rng, new_clean, accounts)
+
+    # Re-delivered rows: copies of earlier rows exactly as they arrived
+    redelivered = existing.sample(a.redeliver, random_state=int(rng.integers(0, 10_000)))
+
+    # Resubmitted fixes: earlier rows that lacked an amount but are otherwise valid
+    iso = r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$"
+    candidates = existing[
+        existing["amount"].isna()
+        & existing["transaction_ts"].fillna("").str.match(iso)
+        & existing["account_id"].isin(accounts["account_id"])
+        & (existing["is_refund"] == "false")
+    ].drop_duplicates("transaction_id")
+    fixed = candidates.sample(min(a.resubmit_fixed, len(candidates)),
+                              random_state=int(rng.integers(0, 10_000))).copy()
+    fixed["amount"] = np.round(rng.lognormal(5.0, 1.1, len(fixed)), 2).astype(str)
+
+    batch = (pd.concat([new_dirty, redelivered, fixed], ignore_index=True)
+               .sample(frac=1, random_state=3).reset_index(drop=True))
+    path = tx_dir / f"transactions_{a.batch_name}.csv"
+    batch.to_csv(path, index=False)
+
+    manifest.update({
+        "batch_file": path.name, "rows_in_file": int(len(batch)),
+        "new_rows_requested": a.new_rows, "redelivered_rows": int(len(redelivered)),
+        "resubmitted_fixes": int(len(fixed)), "first_new_transaction_id": f"T{start_id:010d}",
+        "date_range": [a.start_date, str((pd.Timestamp(a.start_date) + pd.Timedelta(days=a.days - 1)).date())],
+    })
+    (out / f"incremental_manifest_{a.batch_name}.json").write_text(json.dumps(manifest, indent=2))
+    print(json.dumps(manifest, indent=2))
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--rows", type=int, default=500_000)
@@ -184,7 +239,18 @@ def main(argv=None):
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--split", type=int, default=3,
                     help="split transactions into N files, to simulate daily drops")
+    ap.add_argument("--incremental", action="store_true",
+                    help="write ONE new transactions file into an existing <out> instead of a full load")
+    ap.add_argument("--new-rows", type=int, default=20_000)
+    ap.add_argument("--redeliver", type=int, default=1_000)
+    ap.add_argument("--resubmit-fixed", type=int, default=200)
+    ap.add_argument("--start-date", default="2026-07-01")
+    ap.add_argument("--days", type=int, default=3)
+    ap.add_argument("--batch-name", default="batch2")
     a = ap.parse_args(argv)
+    if a.incremental:
+        make_incremental_batch(a)
+        return
 
     rng = np.random.default_rng(a.seed)
     out = Path(a.out)
