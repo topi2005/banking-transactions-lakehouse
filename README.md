@@ -1,6 +1,6 @@
 # Banking Transactions Lakehouse
 
-![CI](https://github.com/topi2005/REPO_NAME/actions/workflows/ci.yml/badge.svg)
+![CI](https://github.com/topi2005/banking-transactions-lakehouse/actions/workflows/ci.yml/badge.svg)
 
 An end-to-end data-engineering project on **Databricks, PySpark and Delta Lake**. It ingests messy
 retail-banking transactions through a **medallion architecture** (bronze → silver → gold), with a
@@ -369,7 +369,19 @@ There are two ways to run it, and they answer slightly different questions:
 | `python benchmarks/benchmark_silver.py` | pandas vs PySpark in **local mode** on your machine | Memory-hungry at 2M rows. Lower `--sizes` and `--spark-memory` if it runs out of memory |
 | `notebooks/16_benchmark_databricks.py` | pandas on the **driver** vs PySpark on **Databricks serverless** | Doesn't depend on your laptop. Includes serverless scheduling latency in the Spark times |
 
-**Results:** _paste the table and environment line from `benchmarks/results.md` or the notebook, whichever you ran._
+# PySpark vs pandas: silver cleaning step (run on Databricks)
+
+**Environment:** Databricks Free Edition serverless. pandas ran on the driver node; PySpark ran on serverless compute.
+
+**Method:** median of 3 runs; CSV read -> clean, validate, quarantine -> Parquet write; Spark warmed up first; outputs
+verified identical (same silver and quarantine row counts) before any timing was accepted. Serverless scheduling latency
+is included in the PySpark times. Produced by `notebooks/16_benchmark_databricks.py`.
+
+| Rows in | pandas (s) | PySpark (s) | Faster | Ratio |
+|---|---|---|---|---|
+| 50,000 | 1.0 | 8.7 | pandas | 9.0x |
+| 500,000 | 5.0 | 9.4 | pandas | 1.9x |
+| 1,000,000 | 9.7 | 10.3 | pandas | 1.1x |
 
 *How to read it: these are single-machine or Free Edition serverless numbers, so they depend on core count and compute
 availability. The useful finding is where Spark's start-up and shuffle overhead stops mattering at this data size. It says nothing
