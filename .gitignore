@@ -1,6 +1,7 @@
 # generated data (reproducible from the seed)
 data/
 *.csv
+.venv
 
 # python / spark
 __pycache__/

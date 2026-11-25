@@ -1,0 +1,5 @@
+# Test and CI dependencies (Databricks provides Spark itself; these are for running the suite locally / in CI)
+pyspark>=3.5      # try_to_timestamp needs 3.5+; Databricks serverless runs a newer Spark
+pandas>=2.0
+numpy>=1.26
+pytest>=8.0

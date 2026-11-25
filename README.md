@@ -1,5 +1,7 @@
 # Banking Transactions Lakehouse
 
+![CI](https://github.com/topi2005/REPO_NAME/actions/workflows/ci.yml/badge.svg)
+
 An end-to-end data-engineering project on **Databricks, PySpark and Delta Lake**. It ingests messy
 retail-banking transactions through a **medallion architecture** (bronze → silver → gold), with a
 measurable data-quality framework, reconciliation checks, and a star-schema reporting mart.
@@ -51,9 +53,13 @@ Databricks (Unity Catalog, Volumes, Workflows) · PySpark · Delta Lake · Pytho
 │   ├── 12_silver_merge.py        │ the four tasks of the workflow
 │   ├── 13_silver_quality_gate.py │
 │   ├── 14_gold_publish.py        ┘
-│   └── 15_demo_new_drop.py     # demo helper: simulates a new daily file
-├── tests/                      # pytest suite (planned)
-└── docs/
+│   ├── 15_demo_new_drop.py     # demo helper: simulates a new daily file
+│   └── 16_benchmark_databricks.py  # the benchmark below, run on Databricks
+├── tests/                      # pytest suite (77 tests)
+├── benchmarks/                 # PySpark vs pandas timing harness
+├── .github/workflows/ci.yml    # runs the tests on every push
+├── requirements-dev.txt
+└── docs/screenshots/
 ```
 
 ## The data
@@ -246,13 +252,13 @@ erDiagram
 
 Both aggregates account for every fact row: `txn_count + outlier_txn_count` equals the fact row count.
 
-![Gold quality checks](docs/04-gold/gold-checks.png)
-![Aggregates reconcile to the fact table](docs/04-gold/aggregates-pass.png)
+![Gold quality checks](docs/screenshots/04-gold/gold-checks.png)
+![Aggregates reconcile to the fact table](docs/screenshots/04-gold/aggregates-pass.png)
 
 **The star schema in use:** net spend by customer segment and merchant category, joining the fact table to
 `dim_customer` and `dim_merchant` on surrogate keys (suspected outliers excluded).
 
-![Net spend by segment and category](docs/04-gold/segment-category-query.png)
+![Net spend by segment and category](docs/screenshots/04-gold/segment-category-query.png)
 
 *The data is synthetic and uniformly random, so differences between categories are noise, not insight. Segment
 totals simply track how many customers each segment has. The query demonstrates the model, not a business finding.*
@@ -311,12 +317,63 @@ bronze 21,600 = dups 401 + quarantined 736 + re-delivered 968 + inserted 19,495 
 Gold published the same 19,495 rows, extended `dim_date` for the July dates, and passed all 24 gold checks, including
 the control totals against silver. The log records every step per batch:
 
-![Silver batch reconciliation](docs/05-pipeline/silver-reconciliation.png)
-![Pipeline batch log](docs/05-pipeline/batch-log.png)
-![Workflow run](docs/05-pipeline/job-run.png)
+![Silver batch reconciliation](docs/screenshots/05-pipeline/silver-reconciliation.png)
+![Pipeline batch log](docs/screenshots/05-pipeline/batch-log.png)
+![Workflow run](docs/screenshots/05-pipeline/job-run.png)
 
 **Idempotent rerun:** a third run found no new file to load, so the batch log is unchanged: still the same six rows (three baseline, three for the new batch), with no new batch created. Re-running the pipeline without new data changes nothing.
 
+
+## Day 6: Tests, CI and a benchmark
+
+**77 automated tests** cover the logic that decides what is kept, repaired, rejected or reported. They run on a small
+local Spark session with **ANSI mode on**, matching Databricks serverless, so a parsing helper that would throw on bad input in
+production throws in the tests too.
+
+| Test file | What it proves |
+|---|---|
+| `test_silver_transforms.py` (41) | Amounts like `R153,62` parse; impossible dates become NULL, never an error; dates are read day-first; first-ingested row wins; **each quarantine rule fires with its own reason**; imputation is flagged; the outlier limit is strict (`>`, not `>=`) |
+| `test_gold_transforms.py` (11) | Surrogate keys are deterministic; NULL and `UNKNOWN` map to key `-1`; age-band boundaries; no PII columns in `dim_customer`; one fact row per silver row; aggregates exclude outliers **and** count them |
+| `test_dq_framework.py` (15) | Every rule kind counts failures correctly; only `not_null` cares about NULLs; thresholds and severity give PASS / WARN / FAIL; the gate raises on errors but not warnings; the shipped rule sets are well-formed |
+| `test_pipeline_ops.py` (5) | New-file detection (including the `dbfs:/` path-prefix difference); batch IDs; bronze lineage columns |
+| `test_generate_data.py` (5) | Same seed gives identical files; the manifest matches what was written; incremental drops continue the id sequence and include re-deliveries and fixes |
+
+**Do the tests catch real bugs?** To check, I deliberately broke the code three ways (month-first date format, an
+off-by-one in the outlier limit, the orphan-account rule disabled). The right tests failed each time.
+
+**CI:** `.github/workflows/ci.yml` installs Java and PySpark and runs the whole suite on every push and pull request.
+
+```
+pip install -r requirements-dev.txt
+python -m pytest
+```
+
+**What the tests do not cover:** the notebooks, and the Delta-specific statements (`MERGE`, `DELETE`). Those are exercised by the
+Databricks runs and guarded there by the per-batch reconciliation assertions and the quality gates.
+
+### PySpark vs pandas benchmark
+
+`benchmarks/benchmark_silver.py` times the same silver cleaning step (CSV in, validated Parquet out) in both engines.
+`benchmarks/pandas_silver.py` re-implements the logic rule for rule, and **the script refuses to report any timing unless
+both engines produce identical silver and quarantine row counts.**
+
+```
+pip install pyspark pandas numpy pyarrow
+python benchmarks/benchmark_silver.py --sizes 50000,500000,2000000 --runs 3
+```
+
+There are two ways to run it, and they answer slightly different questions:
+
+| Route | Compares | Notes |
+|---|---|---|
+| `python benchmarks/benchmark_silver.py` | pandas vs PySpark in **local mode** on your machine | Memory-hungry at 2M rows. Lower `--sizes` and `--spark-memory` if it runs out of memory |
+| `notebooks/16_benchmark_databricks.py` | pandas on the **driver** vs PySpark on **Databricks serverless** | Doesn't depend on your laptop. Includes serverless scheduling latency in the Spark times |
+
+**Results:** _paste the table and environment line from `benchmarks/results.md` or the notebook, whichever you ran._
+
+*How to read it: these are single-machine or Free Edition serverless numbers, so they depend on core count and compute
+availability. The useful finding is where Spark's start-up and shuffle overhead stops mattering at this data size. It says nothing
+about performance on a production cluster, and the environment line above the table says exactly what was measured.*
 
 ## How to run
 
@@ -325,6 +382,7 @@ the control totals against silver. The log records every step per batch:
 3. Run `notebooks/01_bronze_ingest.py` top to bottom. It creates the schema and volume, generates the data and loads bronze.
 4. Run `notebooks/02_silver_transform.py`, `notebooks/03_data_quality.py`, then `notebooks/04_gold_model.py` (the full-load build).
 5. For the incremental pipeline, run `notebooks/10_incremental_setup.py` once, then create the four-task job described in Day 5.
+6. To run the tests locally: `pip install -r requirements-dev.txt && python -m pytest` (Java 17 required for Spark).
 
 To generate data locally instead: `python src/generate_data.py --rows 500000 --out ./data --seed 42`.
 
@@ -335,7 +393,7 @@ To generate data locally instead: `python src/generate_data.py --rows 500000 --o
 - [x] **Day 3:** data-quality framework (`dq_results` table, pipeline gate)
 - [x] **Day 4:** gold star schema (`fact_transactions` + 5 dimensions) + aggregates
 - [x] **Day 5:** Databricks Workflow, incremental loads with Delta `MERGE` for transactions
-- [ ] **Day 6:** pytest suite, GitHub Actions CI, PySpark vs pandas timing comparison
+- [ ] **Day 6:** pytest suite, GitHub Actions CI, PySpark vs pandas timing comparison *(tests and CI written; benchmark results pending)*
 
 ## Limitations and assumptions
 
