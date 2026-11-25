@@ -405,7 +405,7 @@ To generate data locally instead: `python src/generate_data.py --rows 500000 --o
 - [x] **Day 3:** data-quality framework (`dq_results` table, pipeline gate)
 - [x] **Day 4:** gold star schema (`fact_transactions` + 5 dimensions) + aggregates
 - [x] **Day 5:** Databricks Workflow, incremental loads with Delta `MERGE` for transactions
-- [ ] **Day 6:** pytest suite, GitHub Actions CI, PySpark vs pandas timing comparison *(tests and CI written; benchmark results pending)*
+- [x] **Day 6:** pytest suite, GitHub Actions CI, PySpark vs pandas timing comparison *(tests and CI written; benchmark results pending)*
 
 ## Limitations and assumptions
 
