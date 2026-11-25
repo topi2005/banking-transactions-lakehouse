@@ -59,7 +59,7 @@ Databricks (Unity Catalog, Volumes, Workflows) · PySpark · Delta Lake · Pytho
 ├── benchmarks/                 # PySpark vs pandas timing harness
 ├── .github/workflows/ci.yml    # runs the tests on every push
 ├── requirements-dev.txt
-└── docs/screenshots/
+└── docs/
 ```
 
 ## The data
@@ -252,13 +252,13 @@ erDiagram
 
 Both aggregates account for every fact row: `txn_count + outlier_txn_count` equals the fact row count.
 
-![Gold quality checks](docs/screenshots/04-gold/gold-checks.png)
-![Aggregates reconcile to the fact table](docs/screenshots/04-gold/aggregates-pass.png)
+![Gold quality checks](docs/04-gold/gold-checks.png)
+![Aggregates reconcile to the fact table](docs/04-gold/aggregates-pass.png)
 
 **The star schema in use:** net spend by customer segment and merchant category, joining the fact table to
 `dim_customer` and `dim_merchant` on surrogate keys (suspected outliers excluded).
 
-![Net spend by segment and category](docs/screenshots/04-gold/segment-category-query.png)
+![Net spend by segment and category](docs/04-gold/segment-category-query.png)
 
 *The data is synthetic and uniformly random, so differences between categories are noise, not insight. Segment
 totals simply track how many customers each segment has. The query demonstrates the model, not a business finding.*
@@ -317,9 +317,9 @@ bronze 21,600 = dups 401 + quarantined 736 + re-delivered 968 + inserted 19,495 
 Gold published the same 19,495 rows, extended `dim_date` for the July dates, and passed all 24 gold checks, including
 the control totals against silver. The log records every step per batch:
 
-![Silver batch reconciliation](docs/screenshots/05-pipeline/silver-reconciliation.png)
-![Pipeline batch log](docs/screenshots/05-pipeline/batch-log.png)
-![Workflow run](docs/screenshots/05-pipeline/job-run.png)
+![Silver batch reconciliation](docs/05-pipeline/silver-reconciliation.png)
+![Pipeline batch log](docs/05-pipeline/batch-log.png)
+![Workflow run](docs/05-pipeline/job-run.png)
 
 **Idempotent rerun:** a third run found no new file to load, so the batch log is unchanged: still the same six rows (three baseline, three for the new batch), with no new batch created. Re-running the pipeline without new data changes nothing.
 
