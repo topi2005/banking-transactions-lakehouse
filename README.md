@@ -292,7 +292,31 @@ Failure email notification, max concurrent runs = 1. A day with no new file is a
 3. Run `15_demo_new_drop.py` to add a file (new rows, re-delivered rows, resubmitted fixes), then run the job again.
 4. Run the job a third time: nothing new, nothing changes.
 
-**Results:** _fill from the Day 5 run (batch log, per-batch reconciliation, row counts before and after)._
+**Results** (second run, after dropping `transactions_batch2.csv` into the landing volume):
+
+| | Rows |
+|---|---|
+| Rows in the new file | 21,600 (20,000 new + about 2% in-file duplicates, 1,000 re-delivered, 200 resubmitted fixes) |
+| Newly inserted into silver | 19,495 |
+| Quarantined | 736 |
+| Silver after the run | 501,778 (482,283 before + 19,495) |
+| Fact table after the run | 501,778, equal to silver |
+
+**The batch reconciles:**
+
+```
+bronze 21,600 = dups 401 + quarantined 736 + re-delivered 968 + inserted 19,495   PASS
+```
+
+Gold published the same 19,495 rows, extended `dim_date` for the July dates, and passed all 24 gold checks, including
+the control totals against silver. The log records every step per batch:
+
+![Silver batch reconciliation](docs/05-pipeline/silver-reconciliation.png)
+![Pipeline batch log](docs/05-pipeline/batch-log.png)
+![Workflow run](docs/05-pipeline/job-run.png)
+
+**Idempotent rerun:** a third run found no new file to load, so the batch log is unchanged: still the same six rows (three baseline, three for the new batch), with no new batch created. Re-running the pipeline without new data changes nothing.
+
 
 ## How to run
 
@@ -310,7 +334,7 @@ To generate data locally instead: `python src/generate_data.py --rows 500000 --o
 - [x] **Day 2:** silver cleaning, quarantine table, run summary
 - [x] **Day 3:** data-quality framework (`dq_results` table, pipeline gate)
 - [x] **Day 4:** gold star schema (`fact_transactions` + 5 dimensions) + aggregates
-- [ ] **Day 5:** Databricks Workflow, incremental loads with Delta `MERGE` for transactions *(code written; record results after the run)*
+- [x] **Day 5:** Databricks Workflow, incremental loads with Delta `MERGE` for transactions
 - [ ] **Day 6:** pytest suite, GitHub Actions CI, PySpark vs pandas timing comparison
 
 ## Limitations and assumptions
